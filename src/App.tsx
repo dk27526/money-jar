@@ -292,7 +292,7 @@ function App() {
         )
         .reduce((sum, transaction) => sum + transaction.amount, 0);
 
-      return total + Math.max(jar.budget - spent, 0);
+      return total + (jar.budget - spent);
     }, 0);
   }, [jars, monthTransactions]);
 
@@ -1071,9 +1071,7 @@ function Dashboard({
                 <h3>{jar.name}</h3>
 
                 <div className="jar-remaining">
-                  {formatMoney(
-                    Math.max(remaining, 0)
-                  )}
+                  {formatMoney(remaining)}
                 </div>
 
                 <div className="jar-label">
