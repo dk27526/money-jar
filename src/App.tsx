@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
   ArrowDownCircle,
@@ -19,6 +19,7 @@ import {
   Utensils,
   Wallet,
   X,
+  ArrowRightLeft,
 } from "lucide-react";
 
 import type { Jar, Transaction } from "./types";
@@ -30,9 +31,11 @@ import type { Jar, Transaction } from "./types";
 type Page = "dashboard" | "transactions" | "jars";
 
 type TransactionForm = {
-  type: "income" | "expense";
+  type: "income" | "expense" | "transfer";
   amount: string;
   jarId: string;
+  fromJarId: string;
+  toJarId: string;
   note: string;
   date: string;
 };
@@ -138,6 +141,27 @@ const formatInputMoney = (value: string) => {
   return Number(digits).toLocaleString("vi-VN");
 };
 
+const formatInputMoneyWithCursor = (value: string, cursor: number) => {
+  const digitsBefore = value.slice(0, cursor).replace(/\D/g, "").length;
+  const formatted = formatInputMoney(value);
+
+  if (!formatted || digitsBefore === 0) {
+    return { value: formatted, cursor: 0 };
+  }
+
+  let digitCount = 0;
+  let nextCursor = formatted.length;
+  for (let index = 0; index < formatted.length; index += 1) {
+    if (/\d/.test(formatted[index])) digitCount += 1;
+    if (digitCount >= digitsBefore) {
+      nextCursor = index + 1;
+      break;
+    }
+  }
+
+  return { value: formatted, cursor: nextCursor };
+};
+
 const parseMoney = (value: string) => {
   return Number(value.replace(/\D/g, "")) || 0;
 };
@@ -219,6 +243,9 @@ function App() {
   const [showTransactionModal, setShowTransactionModal] =
     useState(false);
 
+  const [showTransferModal, setShowTransferModal] =
+    useState(false);
+
   const [editingTransaction, setEditingTransaction] =
     useState<Transaction | null>(null);
 
@@ -229,7 +256,7 @@ function App() {
   const [search, setSearch] = useState("");
 
   const [transactionTypeFilter, setTransactionTypeFilter] =
-    useState<"all" | "income" | "expense">("all");
+    useState<"all" | "income" | "expense" | "transfer">("all");
 
   const [transactionJarFilter, setTransactionJarFilter] =
     useState("all");
@@ -287,12 +314,19 @@ function App() {
       const spent = monthTransactions
         .filter(
           (transaction) =>
-            transaction.type === "expense" &&
-            transaction.jarId === jar.id
+            (transaction.type === "expense" && transaction.jarId === jar.id) ||
+            (transaction.type === "transfer" && transaction.fromJarId === jar.id)
         )
         .reduce((sum, transaction) => sum + transaction.amount, 0);
 
-      return total + (jar.budget - spent);
+      const received = monthTransactions
+        .filter(
+          (transaction) =>
+            transaction.type === "transfer" && transaction.toJarId === jar.id
+        )
+        .reduce((sum, transaction) => sum + transaction.amount, 0);
+
+      return total + (jar.budget - spent + received);
     }, 0);
   }, [jars, monthTransactions]);
 
@@ -306,14 +340,23 @@ function App() {
     return monthTransactions
       .filter(
         (transaction) =>
-          transaction.type === "expense" &&
-          transaction.jarId === jarId
+          (transaction.type === "expense" && transaction.jarId === jarId) ||
+          (transaction.type === "transfer" && transaction.fromJarId === jarId)
+      )
+      .reduce((sum, transaction) => sum + transaction.amount, 0);
+  };
+
+  const getJarReceived = (jarId: string) => {
+    return monthTransactions
+      .filter(
+        (transaction) =>
+          transaction.type === "transfer" && transaction.toJarId === jarId
       )
       .reduce((sum, transaction) => sum + transaction.amount, 0);
   };
 
   const getJarRemaining = (jar: Jar) => {
-    return jar.budget - getJarSpent(jar.id);
+    return jar.budget - getJarSpent(jar.id) + getJarReceived(jar.id);
   };
 
   const getJarPercentage = (jar: Jar) => {
@@ -372,7 +415,9 @@ function App() {
 
         if (
           transactionJarFilter !== "all" &&
-          transaction.jarId !== transactionJarFilter
+          transaction.jarId !== transactionJarFilter &&
+          transaction.fromJarId !== transactionJarFilter &&
+          transaction.toJarId !== transactionJarFilter
         ) {
           return false;
         }
@@ -410,9 +455,20 @@ function App() {
     setShowTransactionModal(true);
   };
 
+  const openAddTransfer = () => {
+    setEditingTransaction(null);
+    setShowTransferModal(true);
+  };
+
   const openEditTransaction = (
     transaction: Transaction
   ) => {
+    if (transaction.type === "transfer") {
+      setEditingTransaction(transaction);
+      setShowTransferModal(true);
+      return;
+    }
+
     setEditingTransaction(transaction);
     setShowTransactionModal(true);
   };
@@ -452,9 +508,11 @@ function App() {
               type: form.type,
               amount,
               jarId:
-                form.type === "expense"
+            form.type === "expense"
                   ? form.jarId
                   : undefined,
+              fromJarId: undefined,
+              toJarId: undefined,
               note: form.note,
               date: form.date,
             }
@@ -470,6 +528,8 @@ function App() {
           form.type === "expense"
             ? form.jarId
             : undefined,
+        fromJarId: undefined,
+        toJarId: undefined,
         note: form.note,
         date: form.date,
       };
@@ -481,6 +541,53 @@ function App() {
     }
 
     closeTransactionModal();
+  };
+
+  const saveTransfer = (form: TransactionForm) => {
+    const amount = parseMoney(form.amount);
+
+    if (amount <= 0) {
+      alert("Vui lòng nhập số tiền hợp lệ.");
+      return;
+    }
+
+    if (!form.date) {
+      alert("Vui lòng chọn ngày.");
+      return;
+    }
+
+    if (!form.fromJarId || !form.toJarId) {
+      alert("Vui lòng chọn hũ nguồn và hũ đích.");
+      return;
+    }
+
+    if (form.fromJarId === form.toJarId) {
+      alert("Hũ nguồn và hũ đích phải khác nhau.");
+      return;
+    }
+
+    setTransactions((current) => {
+      const transfer = {
+        id: editingTransaction?.id ?? generateId(),
+        type: "transfer" as const,
+        amount,
+        fromJarId: form.fromJarId,
+        toJarId: form.toJarId,
+        note: form.note,
+        date: form.date,
+      };
+
+      return editingTransaction?.type === "transfer"
+        ? current.map((transaction) =>
+            transaction.id === editingTransaction.id
+              ? transfer
+              : transaction
+          )
+        : [...current, transfer];
+    });
+
+    setShowTransferModal(false);
+    setEditingTransaction(null);
   };
 
   const deleteTransaction = (
@@ -830,6 +937,13 @@ function App() {
               <Plus size={18} />
               Thêm giao dịch
             </button>
+            <button
+              className="secondary-button"
+              onClick={openAddTransfer}
+            >
+              <ArrowRightLeft size={18} />
+              Chuyển tiền
+            </button>
           </div>
         </header>
 
@@ -920,6 +1034,19 @@ function App() {
           }
           onClose={closeTransactionModal}
           onSave={saveTransaction}
+        />
+      )}
+
+      {showTransferModal && (
+        <TransferModal
+          jars={jars}
+          transaction={
+            editingTransaction?.type === "transfer"
+              ? editingTransaction
+              : null
+          }
+          onClose={() => setShowTransferModal(false)}
+          onSave={saveTransfer}
         />
       )}
 
@@ -1224,7 +1351,7 @@ type TransactionsPageProps = {
   jars: Jar[];
   search: string;
   setSearch: (value: string) => void;
-  typeFilter: "all" | "income" | "expense";
+  typeFilter: "all" | "income" | "expense" | "transfer";
   setTypeFilter: (
     value: "all" | "income" | "expense"
   ) => void;
@@ -1310,6 +1437,10 @@ function TransactionsPage({
             <option value="expense">
               Chi tiêu
             </option>
+
+            <option value="transfer">
+              Chuyển tiền
+            </option>
           </select>
 
           <select
@@ -1382,16 +1513,20 @@ function TransactionRow({
     (item) => item.id === transaction.jarId
   );
 
-  const isIncome =
-    transaction.type === "income";
+  const isIncome = transaction.type === "income";
+  const isTransfer = transaction.type === "transfer";
+  const fromJar = jars.find((item) => item.id === transaction.fromJarId);
+  const toJar = jars.find((item) => item.id === transaction.toJarId);
 
   return (
     <div className="transaction-row">
       <div
-        className={`transaction-icon ${isIncome ? "income" : "expense"
+        className={`transaction-icon ${isTransfer ? "transfer" : isIncome ? "income" : "expense"
           }`}
       >
-        {isIncome ? (
+        {isTransfer ? (
+          <ArrowRightLeft size={20} />
+        ) : isIncome ? (
           <ArrowUpCircle size={20} />
         ) : (
           <ArrowDownCircle size={20} />
@@ -1400,16 +1535,15 @@ function TransactionRow({
 
       <div className="transaction-main">
         <div className="transaction-title">
-          {transaction.note ||
-            (isIncome
-              ? "Thu nhập"
-              : "Chi tiêu")}
+          {transaction.note || (isTransfer ? "Chuyển tiền" : isIncome ? "Thu nhập" : "Chi tiêu")}
         </div>
 
         <div className="transaction-meta">
-          {isIncome
-            ? "Thu nhập"
-            : jar
+          {isTransfer
+            ? `${fromJar?.icon ?? ""} ${fromJar?.name ?? "Hũ nguồn"} → ${toJar?.icon ?? ""} ${toJar?.name ?? "Hũ đích"}`
+            : isIncome
+              ? "Thu nhập"
+              : jar
               ? `${jar.icon} ${jar.name}`
               : "Không có hũ"}
 
@@ -1420,19 +1554,17 @@ function TransactionRow({
       </div>
 
       <div
-        className={`transaction-amount ${isIncome ? "income" : "expense"
+        className={`transaction-amount ${isTransfer ? "transfer" : isIncome ? "income" : "expense"
           }`}
       >
-        {isIncome ? "+" : "-"}
+        {isTransfer ? "↔" : isIncome ? "+" : "-"}
         {formatMoney(transaction.amount)}
       </div>
 
       <div className="transaction-actions">
         <button
           className="icon-button"
-          onClick={() =>
-            onEdit(transaction)
-          }
+          onClick={() => onEdit(transaction)}
           title="Sửa"
         >
           <Edit3 size={17} />
@@ -1633,10 +1765,9 @@ function TransactionModal({
   onClose,
   onSave,
 }: TransactionModalProps) {
-  const [type, setType] = useState<
-    "income" | "expense"
-  >(
-    transaction?.type ?? "expense"
+  const amountInputRef = useRef<HTMLInputElement>(null);
+  const [type, setType] = useState<"income" | "expense">(
+    transaction?.type === "income" ? "income" : "expense"
   );
 
   const [amount, setAmount] =
@@ -1669,6 +1800,8 @@ function TransactionModal({
       type,
       amount,
       jarId,
+      fromJarId: "",
+      toJarId: "",
       note,
       date,
     });
@@ -1733,14 +1866,13 @@ function TransactionModal({
           <div className="money-input-wrapper">
             <input
               autoFocus
+              ref={amountInputRef}
               value={amount}
-              onChange={(event) =>
-                setAmount(
-                  formatInputMoney(
-                    event.target.value
-                  )
-                )
-              }
+              onChange={(event) => {
+                const result = formatInputMoneyWithCursor(event.target.value, event.target.selectionStart ?? event.target.value.length);
+                setAmount(result.value);
+                requestAnimationFrame(() => amountInputRef.current?.setSelectionRange(result.cursor, result.cursor));
+              }}
               placeholder="0"
               inputMode="numeric"
             />
@@ -1828,6 +1960,91 @@ function TransactionModal({
   );
 }
 
+function TransferModal({
+  jars,
+  transaction,
+  onClose,
+  onSave,
+}: {
+  jars: Jar[];
+  transaction: Transaction | null;
+  onClose: () => void;
+  onSave: (form: TransactionForm) => void;
+}) {
+  const amountInputRef = useRef<HTMLInputElement>(null);
+  const [amount, setAmount] = useState(
+    transaction ? formatInputMoney(String(transaction.amount)) : ""
+  );
+  const [fromJarId, setFromJarId] = useState(
+    transaction?.fromJarId ?? jars[0]?.id ?? ""
+  );
+  const [toJarId, setToJarId] = useState(
+    transaction?.toJarId ?? jars[1]?.id ?? jars[0]?.id ?? ""
+  );
+  const [note, setNote] = useState(transaction?.note ?? "");
+  const [date, setDate] = useState(transaction?.date ?? getToday());
+
+  const handleSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    onSave({
+      type: "transfer",
+      amount,
+      jarId: "",
+      fromJarId,
+      toJarId,
+      note,
+      date,
+    });
+  };
+
+  return (
+    <Modal title={transaction ? "Sửa chuyển tiền" : "Chuyển tiền giữa các hũ"} onClose={onClose}>
+      <form className="modal-form" onSubmit={handleSubmit}>
+        <div className="form-group">
+          <label>Số tiền</label>
+          <div className="money-input-wrapper">
+            <input autoFocus ref={amountInputRef} value={amount} onChange={(event) => {
+              const result = formatInputMoneyWithCursor(event.target.value, event.target.selectionStart ?? event.target.value.length);
+              setAmount(result.value);
+              requestAnimationFrame(() => amountInputRef.current?.setSelectionRange(result.cursor, result.cursor));
+            }} placeholder="0" inputMode="numeric" />
+            <span>VNĐ</span>
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label>Chuyển từ hũ</label>
+          <select value={fromJarId} onChange={(event) => setFromJarId(event.target.value)}>
+            {jars.map((jar) => <option key={jar.id} value={jar.id}>{jar.icon} {jar.name}</option>)}
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label>Chuyển đến hũ</label>
+          <select value={toJarId} onChange={(event) => setToJarId(event.target.value)}>
+            {jars.map((jar) => <option key={jar.id} value={jar.id}>{jar.icon} {jar.name}</option>)}
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label>Ghi chú</label>
+          <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Ví dụ: Bù ngân sách..." />
+        </div>
+
+        <div className="form-group">
+          <label>Ngày</label>
+          <input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
+        </div>
+
+        <div className="modal-actions">
+          <button type="button" className="secondary-button" onClick={onClose}>Hủy</button>
+          <button type="submit" className="primary-button"><ArrowRightLeft size={18} /> {transaction ? "Lưu thay đổi" : "Chuyển tiền"}</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 /* =========================================================
    JAR MODAL
 ========================================================= */
@@ -1847,6 +2064,7 @@ function JarModal({
   onClose,
   onSave,
 }: JarModalProps) {
+  const budgetInputRef = useRef<HTMLInputElement>(null);
   const [name, setName] = useState(
     jar?.name ?? ""
   );
@@ -1901,14 +2119,13 @@ function JarModal({
 
           <div className="money-input-wrapper">
             <input
+              ref={budgetInputRef}
               value={budget}
-              onChange={(event) =>
-                setBudget(
-                  formatInputMoney(
-                    event.target.value
-                  )
-                )
-              }
+              onChange={(event) => {
+                const result = formatInputMoneyWithCursor(event.target.value, event.target.selectionStart ?? event.target.value.length);
+                setBudget(result.value);
+                requestAnimationFrame(() => budgetInputRef.current?.setSelectionRange(result.cursor, result.cursor));
+              }}
               placeholder="3.000.000"
               inputMode="numeric"
             />

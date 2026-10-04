@@ -7,9 +7,11 @@ export interface Jar {
   
   export interface Transaction {
     id: string;
-    type: "income" | "expense";
+    type: "income" | "expense" | "transfer";
     amount: number;
     jarId?: string;
+    fromJarId?: string;
+    toJarId?: string;
     note: string;
     date: string;
   }
